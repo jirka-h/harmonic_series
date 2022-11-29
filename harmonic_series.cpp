@@ -52,35 +52,104 @@ public:
     }
 };
 
-static __inline__ u_int64_t start_clock() {
-    // See: Intel Doc #324264, "How to Benchmark Code Execution Times on Intel...",
-    u_int32_t hi, lo;
-    __asm__ __volatile__ (
-        "CPUID\n\t"
-        "RDTSC\n\t"
-        "mov %%edx, %0\n\t"
-        "mov %%eax, %1\n\t": "=r" (hi), "=r" (lo)::
-        "%rax", "%rbx", "%rcx", "%rdx");
-    return ( (u_int64_t)lo) | ( ((u_int64_t)hi) << 32);
+struct timespec time_diff(struct timespec * start, struct timespec * end) {
+  struct timespec diff;
+  diff.tv_sec = end->tv_sec - start->tv_sec;
+  if(end->tv_nsec < start->tv_sec){
+    diff.tv_sec--;
+    diff.tv_nsec = start->tv_sec - end->tv_nsec;
+  } else {
+    diff.tv_nsec = end->tv_nsec - start->tv_sec;
+  }
+  return diff;
 }
 
-static __inline__ u_int64_t stop_clock() {
-    // See: Intel Doc #324264, "How to Benchmark Code Execution Times on Intel...",
-    u_int32_t hi, lo;
-    __asm__ __volatile__(
-        "RDTSCP\n\t"
-        "mov %%edx, %0\n\t"
-        "mov %%eax, %1\n\t"
-        "CPUID\n\t": "=r" (hi), "=r" (lo)::
-        "%rax", "%rbx", "%rcx", "%rdx");
-    return ( (u_int64_t)lo) | ( ((u_int64_t)hi) << 32);
+void printTimer(struct timespec * start, struct timespec * end) {
+  double run_time = (double)(end->tv_sec) - (double)(start->tv_sec) +
+    ( (double)(end->tv_nsec) - (double)(start->tv_nsec) ) / 1.0E9;
+  printf("Time elapsed: %g s\n", run_time);
 }
+
 
 double HarmonicAproxD(unsigned long long int N)
 {
   double   x = (double) N;
   double res = log(x) + 0.57721566490153286060651209008240243104215933593992359880576723488486772677766467093694706329174674951463144724980708248096050401448654283622417 + 1.0/(2*x) - 1.0/(12*x*x) + 1.0/(120*x*x*x*x);
   return res;
+}
+
+// https://github.com/stgatilov/recip_rsqrt_benchmark/blob/master/routines_sse.h#L66
+// One iteration of Newton - Rhapson for 1/x - 1/a == 0
+inline Vec8d recip_double2_nr1(Vec8d a) {
+  Vec8d res = to_double(approx_recipr(to_float(a)));
+  Vec8d muls = a * ( res * res );
+  res = ( res + res ) - muls;
+  return res;
+}
+
+// https://github.com/stgatilov/recip_rsqrt_benchmark/blob/master/routines_sse.h#L76
+// Two iterations of Newton - Rhapson for 1/x - 1/a == 0
+inline Vec8d recip_double2_nr2(Vec8d a) {
+  Vec8d res = to_double(approx_recipr(to_float(a)));
+  Vec8d muls = a * ( res * res );
+  res = ( res + res ) - muls;
+  muls = a * ( res * res );
+  res = ( res + res ) - muls;
+  return res;
+}
+
+inline Vec8d recip_double2_r5(Vec8d a) {
+  const Vec8d oneV(1.0);
+  Vec8d x = to_double(approx_recipr(to_float(a)));
+  Vec8d r = oneV - a * x;
+  Vec8d r2 = r * r;
+  Vec8d r2r = r2 + r;
+  Vec8d r21 = r2 + oneV;
+  Vec8d poly = r2r * r21;
+  Vec8d res = poly * x + x;
+  return res;
+}
+
+/*
+https://github.com/stgatilov/recip_rsqrt_benchmark/blob/master/routines_sse.h#L108
+static FORCEINLINE __m128d recip_double2_r5(__m128d a) {
+  //inspired by http://www.mersenneforum.org/showthread.php?t=11765
+  __m128d one = _mm_set1_pd(1.0);
+  __m128d x = _mm_cvtps_pd(_mm_rcp_ps(_mm_cvtpd_ps(a)));
+  __m128d r = _mm_sub_pd(one, _mm_mul_pd(a, x));
+  __m128d r2 = _mm_mul_pd(r, r);
+  __m128d r2r = _mm_add_pd(r2, r);      // r^2 + r
+  __m128d r21 = _mm_add_pd(r2, one);    // r^2 + 1
+  __m128d poly = _mm_mul_pd(r2r, r21);
+  __m128d res = _mm_add_pd(_mm_mul_pd(poly, x), x);
+  return res;
+}
+
+*/
+
+double HarmonicSeriesApprox(const unsigned long long int N) {
+  unsigned long long int i;
+  Vec8d divV(1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0);
+  Vec8d sumV(0.0);
+  const Vec8d addV(8.0);
+
+  const Vec8d startdivV = divV;
+  bool first_loop = true;
+  #pragma omp declare reduction( + : Vec8d : omp_out = omp_out + omp_in ) initializer (omp_priv=omp_orig)
+//It's important to mark "first_loop" variable as firstprivate so that each private copy gets initialized.
+  #pragma omp parallel for firstprivate(first_loop) lastprivate(divV) reduction(+:sumV)
+  for(i=0; i<N; ++i) {
+    if (first_loop) {
+      divV = startdivV + i * addV;
+      first_loop = false;
+    } else {
+      divV += addV;
+    }
+     sumV += recip_double2_r5(divV);
+     //sumV += recip_double2_nr1(divV);
+     //sumV += recip_double2_nr2(divV);
+  }
+  return horizontal_add(sumV);
 }
 
 double HarmonicSeries(const unsigned long long int N) {
@@ -160,18 +229,25 @@ int main(int argc, char** argv) {
     return EXIT_FAILURE;
   }
 */
-  const unsigned long long int N=(u_int64_t)12e10;
+  const unsigned long long int N=(u_int64_t)12e9;
   struct timespec t[2];
-  u_int64_t rdtsc[2];
   clock_gettime(CLOCK_MONOTONIC, &t[0]);
-  rdtsc[0] = start_clock();
   double sum = HarmonicSeries(N);
-  rdtsc[1] = start_clock();
   clock_gettime(CLOCK_MONOTONIC, &t[1]);
 
   printf("Sum of first %llu elements of Harmonic Series: %g\n", 8*N, sum);
   printf("Difference Sum - Formula %g\n", sum - HarmonicAproxD(8*N) );
+  printTimer(&t[0], &t[1]);
 
+  clock_gettime(CLOCK_MONOTONIC, &t[0]);
+  double sumApprox = HarmonicSeriesApprox(N);
+  clock_gettime(CLOCK_MONOTONIC, &t[1]);
+
+  printf("Approx sum of first %llu elements of Harmonic Series: %g\n", 8*N, sumApprox);
+  printf("Difference Sum - Formula %g\n", sumApprox - HarmonicAproxD(8*N) );
+  printTimer(&t[0], &t[1]);
+
+  printf("Sum - Approx. Sum %g\n", sum - sumApprox );
 
   return EXIT_SUCCESS;
 }
