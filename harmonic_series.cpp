@@ -1,4 +1,5 @@
 /*
+g++ -Wall -Wextra -O3 -g                  -I include -fopenmp -march=native                                         -std=c++17 -o harmonic_series harmonic_series.cpp
 g++ -Wall -Wextra -O3 -g                  -I include -fopenmp -m64 -mavx2 -mfma                                     -std=c++17 -o harmonic_series harmonic_series.cpp
 
 g++ -Wall -Wextra -O3 -g                  -I include -fopenmp -m64 -mavx2 -mfma                                     -std=c++17 -o harmonic_series harmonic_series.cpp
@@ -53,20 +54,37 @@ double HarmonicSeries(const unsigned long long int N) {
   const Vec8d addV(8.0);
   const Vec8d oneV(1.0);
 
+  //Kahan summation
+  const Vec8d zeroV(0.0);
+  Vec8d c(0.0);
+  Vec8d y, t;
+
 #if 1
   const Vec8d startdivV = divV;
   bool first_loop = true;
   #pragma omp declare reduction( + : Vec8d : omp_out = omp_out + omp_in ) initializer (omp_priv=omp_orig)
 //It's important to mark "first_loop" variable as firstprivate so that each private copy gets initialized.
-  #pragma omp parallel for firstprivate(first_loop) lastprivate(divV) reduction(+:sumV)
+//firstprivate	Specifies that each thread should have its own instance of a variable, and that the variable should be initialized with the value of the variable, because it exists before the parallel construct.
+//lastprivate	Specifies that the enclosing context's version of the variable is set equal to the private version of whichever thread executes the final iteration (for-loop construct) or last section (#pragma sections).
+  #pragma omp parallel for firstprivate(first_loop) lastprivate(divV) private(y, t) reduction(+:sumV,c)
   for(i=0; i<N; ++i) {
     if (first_loop) {
       divV = startdivV + i * addV;
       first_loop = false;
+      c = zeroV;
+      sumV = oneV / divV;
     } else {
       divV += addV;
+      //sumV += oneV / divV;
+      //Kahan summation
+      //Algebraically, c is always 0
+      //But, when there is a loss in precision, the higher-order y is cancelled out by subtracting y from c and
+      //all that remains is the lower-order error in c
+      y = oneV / divV - c;
+      t = sumV + y;
+      c = ( t - sumV ) - y;
+      sumV = t;
     }
-    sumV += oneV / divV;
   }
 #if 0
   for (int j=0; j<8; ++j) {
@@ -112,7 +130,10 @@ https://stackoverflow.com/questions/18746282/openmp-schedulestatic-with-no-chunk
     }
   }
 #endif
-  return horizontal_add(sumV);
+  double sum = horizontal_add(sumV);
+  double lower_order_error = horizontal_add(c);
+  //printf("Sum: %g, lower-order error: %g\n", sum, lower_order_error);
+  return sum - lower_order_error;
 }
 
 
@@ -137,14 +158,14 @@ int main(int argc, char** argv) {
   elapsed_time = time_diff(&t[0], &t[1]);
 
   if (elapsed_time < runtime) {
-    printf("Estimating number of terms of sum to reach runtime %g seconds.\n", runtime);
+    printf("Estimating number of terms of sum to reach runtime %g seconds:\n", runtime);
     double terms = ( (double) N / elapsed_time * runtime );
     //round to 2 valid digits
     double exp = floor(log10(terms));
     if (exp > 2 ) {
       terms = round(terms/pow(10.0, exp-1)) * pow(10.0, exp-1);
     }
-    printf("%g terms took %g seconds. Need %g terms.\n", (double)(8*N), elapsed_time, 8*terms);
+    printf("\t%g terms took %g seconds. Need %g terms.\n", (double)(8*N), elapsed_time, 8*terms);
     N = (unsigned long long int) terms;
 
     clock_gettime(CLOCK_MONOTONIC, &t[0]);
