@@ -8,6 +8,9 @@ g++ -Wall -Wextra -O3 -g                  -I include -fopenmp -m64 -mavx512f -mf
 g++ -Wall -Wextra -g -fsanitize=undefined -I include -fopenmp -m64 -mavx512f -mfma -mavx512vl -mavx512bw -mavx512dq -std=c++17 -o harmonic_series harmonic_series.cpp
 
 https://stackoverflow.com/questions/74527011/how-to-use-vector-class-library-for-avx-vectorization-together-with-the-openmp
+
+(c) Copyright 2021-2022 Jirka Hladky
+GNU Affero General Public License
 */
 #include <iostream>
 #include <vectorclass.h>
@@ -176,7 +179,6 @@ int main(int argc, char** argv) {
 
   printf("Sum of first %llu elements of Harmonic Series: %g completed in %g seconds.\n", 8*N, sum, elapsed_time);
   printf("Difference Sum - Formula %g\n", sum - HarmonicAproxD(8*N) );
-  printTimer(&t[0], &t[1]);
   printf("Avg: %g operations/second\n", (double) (8 * N) / elapsed_time);
 
   return EXIT_SUCCESS;
